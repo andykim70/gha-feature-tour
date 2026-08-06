@@ -1,0 +1,53 @@
+# =============================================================================
+#  SCHEDULED WORKFLOW  —  GitLab equivalent: pipeline schedules (UI-configured)
+#
+#  Two things to know:
+#   1. Scheduled workflows ONLY run from the DEFAULT BRANCH. Adding a schedule
+#      on a feature branch does nothing.
+#   2. GitHub disables schedules after ~60 days of repository inactivity.
+#
+#  ⭐ NEW (March 2026): cron schedules take an IANA `timezone:` field.
+#     Before this, everything was UTC and you did the DST arithmetic yourself.
+# =============================================================================
+
+name: 02 · Scheduled
+
+#  ⚠ actionlint (v2.0.6) FLAGS the `timezone:` key below as invalid. It is not —
+#    actionlint's bundled schema predates the March 2026 addition. Verified
+#    against GitHub's own changelog, which specifies a `timezone` field
+#    alongside the cron expression. A useful reminder that your linter lags the
+#    platform. If GitHub ever rejects it, delete the timezone line and convert
+#    to UTC by hand — nothing else in this repo depends on it.
+
+on:
+  schedule:
+    - cron: '0 7 * * 1-5'            # 07:00 weekdays...
+      timezone: 'America/Phoenix'     # ...Phoenix time, not UTC
+  workflow_dispatch:                  # so you can trigger it by hand to test
+
+permissions:
+  contents: read
+
+jobs:
+  heartbeat:
+    name: Scheduled heartbeat
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report
+        run: |
+          echo "Triggered by: ${{ github.event_name }}"
+          echo "UTC now ....: $(date -u +%FT%TZ)"
+          echo "Phoenix now : $(TZ=America/Phoenix date +%FT%T)"
+          echo ""
+          echo "Scheduled runs always execute against the DEFAULT branch."
+
+      - name: Summary
+        run: |
+          {
+            echo "## ⏰ Scheduled run"
+            echo ""
+            echo "Cron \`0 7 * * 1-5\` with \`timezone: America/Phoenix\`."
+            echo "The timezone field was added in March 2026 — before that,"
+            echo "cron was UTC-only and you handled DST yourself."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,10 @@
+# Fake lockfile. Its hash feeds the actions/cache key in demo.yml:
+#   key: ${{ runner.os }}-deps-${{ matrix.component }}-${{ hashFiles('deps.lock') }}
+#
+# Edit any line below, commit, and push: the hash changes, the cache key changes,
+# and you get a cache MISS. Revert it and you get a HIT again.
+#
+# This is how you make a cache key track the thing it actually depends on.
+
+demo-lib==1.0.0
+another-lib==2.3.1

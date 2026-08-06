@@ -1,0 +1,13 @@
+# Keeps action references updated as reviewable PRs.
+#
+# This is the control that makes SHA-pinning practical: you pin to an immutable
+# commit, and Dependabot opens a PR when there's a newer one. Without it, teams
+# pin once and never update, which is its own problem.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

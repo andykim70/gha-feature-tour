@@ -1,0 +1,55 @@
+# =============================================================================
+#  COMPOSITE ACTION  —  GitLab equivalent: extends: / a YAML anchor
+#
+#  Used at the STEP level:
+#      - uses: ./.github/actions/greet
+#        with: { who: api, build-id: abc123 }
+#
+#  Runs inside the CALLING job — same runner, same filesystem, same env.
+#  Cannot set runs-on, environment, or its own permissions.
+#
+#  ⚠ THE #1 COMPOSITE ACTION MISTAKE: every `run:` step needs `shell:`.
+#     Omit it and you get a confusing validation error.
+# =============================================================================
+
+name: 'Greet'
+description: 'Demonstrates a composite action with inputs and outputs'
+
+inputs:
+  who:
+    description: 'Name of the component being built'
+    required: true
+  build-id:
+    description: 'Build identifier'
+    required: false
+    default: 'unknown'
+
+outputs:
+  message:
+    description: 'The greeting that was produced'
+    value: ${{ steps.build-message.outputs.message }}
+
+runs:
+  using: composite
+  steps:
+    - name: Announce
+      shell: bash                    # <-- REQUIRED on every run step
+      run: |
+        echo "Composite action running inside the caller's job."
+        echo "  who ....... ${{ inputs.who }}"
+        echo "  build-id .. ${{ inputs.build-id }}"
+
+    - name: Build the message
+      id: build-message
+      shell: bash                    # <-- REQUIRED here too
+      run: |
+        set -euo pipefail
+        MSG="hello from ${{ inputs.who }} (build ${{ inputs.build-id }})"
+        echo "message=${MSG}" >> "$GITHUB_OUTPUT"
+
+    - name: Show that we share the caller's filesystem
+      shell: bash
+      run: |
+        echo "workspace: $GITHUB_WORKSPACE"
+        echo "This is the SAME runner and workspace as the calling job —"
+        echo "unlike a reusable workflow, which gets its own."

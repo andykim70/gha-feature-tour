@@ -1,0 +1,132 @@
+# =============================================================================
+#  REUSABLE WORKFLOW  —  GitLab equivalent: include: a template
+#
+#  Called at the JOB level:
+#      jobs:
+#        deploy:
+#          uses: ./.github/workflows/reusable-deploy.yml
+#          with:    { environment_name: staging, build_id: abc, dry_run: true }
+#          secrets: inherit
+#
+#  Why a reusable workflow and not a composite action:
+#    - it can set its own `runs-on`
+#    - it can sit behind an `environment` approval gate
+#    - it can declare its own `permissions`
+#  A composite action can do none of those — it runs inside the caller's job.
+# =============================================================================
+
+name: 01 · Reusable deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        description: 'GitHub Environment to target (gate + scoped secrets)'
+        type: string
+        required: true
+      build_id:
+        description: 'Build identifier passed down from the caller'
+        type: string
+        required: true
+      dry_run:
+        description: 'Typed as a real boolean here — unlike workflow_dispatch'
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      DEPLOY_TOKEN:
+        description: 'Optional — demo works without it'
+        required: false
+    outputs:
+      deployed_url:
+        description: 'URL the caller can read'
+        value: ${{ jobs.deploy.outputs.url }}
+
+# NOTE: `env:` from the CALLER does not propagate into a reusable workflow.
+# Anything you need must arrive via inputs. This is a common surprise.
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    # -------------------------------------------------------------------------
+    # ENVIRONMENT — the production gate.
+    # In repo Settings -> Environments you can attach:
+    #   · required reviewers      (job pauses for human approval)
+    #   · wait timer
+    #   · deployment branch rules (only main may deploy here)
+    #   · environment-scoped secrets, invisible to every other job
+    # It also gives OIDC a `sub` claim value you can scope a cloud trust
+    # policy to: repo:OWNER/REPO:environment:production
+    #
+    # `deployment: false` (new March 2026) gets you the secret scoping without
+    # creating a deployment record. Incompatible with custom protection rules.
+    # -------------------------------------------------------------------------
+    environment:
+      name: ${{ inputs.environment_name }}
+      url: https://example.invalid/${{ inputs.build_id }}
+
+    # -------------------------------------------------------------------------
+    # CONCURRENCY — serialize, don't cancel.
+    # GitLab's resource_group. Never cancel a deploy mid-flight.
+    # -------------------------------------------------------------------------
+    concurrency:
+      group: deploy-${{ inputs.environment_name }}
+      cancel-in-progress: false
+
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Inputs received from the caller
+        run: |
+          echo "environment_name .. ${{ inputs.environment_name }}"
+          echo "build_id .......... ${{ inputs.build_id }}"
+          echo "dry_run ........... ${{ inputs.dry_run }}   <- a REAL boolean here"
+          echo ""
+          echo "workflow_call inputs are typed. workflow_dispatch inputs are"
+          echo "always strings, even when declared type: boolean."
+
+      - name: Secret presence check
+        env:
+          # Never echo a secret. Test for presence only.
+          TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          if [ -n "${TOKEN:-}" ]; then
+            echo "DEPLOY_TOKEN is present (value never printed)"
+          else
+            echo "DEPLOY_TOKEN not set — fine, this demo does not need it."
+            echo "Secrets are NOT inherited by reusable workflows unless the"
+            echo "caller passes them explicitly or uses 'secrets: inherit'."
+          fi
+
+      - name: Deploy (dry run)
+        id: deploy
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "DRY RUN — would deploy ${{ inputs.build_id }} to ${{ inputs.environment_name }}"
+          else
+            echo "would really deploy here"
+          fi
+          echo "url=https://example.invalid/${{ inputs.build_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          {
+            echo "## 🚀 Deploy — ${{ inputs.environment_name }}"
+            echo ""
+            echo "- Build: \`${{ inputs.build_id }}\`"
+            echo "- Dry run: \`${{ inputs.dry_run }}\`"
+            echo "- URL: ${{ steps.deploy.outputs.url }}"
+            echo ""
+            echo "Called as a **reusable workflow** — it set its own \`runs-on\`,"
+            echo "its own \`environment\` gate, and its own \`concurrency\` group."
+          } >> "$GITHUB_STEP_SUMMARY"
