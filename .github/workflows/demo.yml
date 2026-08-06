@@ -409,7 +409,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download every artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: all-artifacts
           # no `name:` = download them all
