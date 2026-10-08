@@ -207,7 +207,7 @@ jobs:
           cat "dist/${{ matrix.component }}.txt"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           # unique per matrix leg — v4+ artifacts are immutable, you cannot append
           name: ${{ env.ARTIFACT_NAME }}-${{ matrix.component }}
